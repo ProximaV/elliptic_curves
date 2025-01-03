@@ -1,3 +1,6 @@
+import hashlib
+import random
+
 class EllipticCurveBase:
     def __init__(self, a, b, n):
         """Base class for elliptic curves."""
@@ -121,12 +124,35 @@ class EllipticCurveBase:
     def solve_y(self, x):
         raise NotImplementedError("Must be implemented by subclass.")
 
-    def _hash_message(self,message):
-        """Simulate a hash function by converting the message to an integer."""
-        # Simple hash function for demonstration purposes
-        return sum(ord(c) for c in message)
+    def _mess_to_bytes(self, message):
+        if isinstance(message, str):
+            data_bytes = message.encode('utf-8')
+        elif isinstance(message, int):
+            hex_string = hex(message)[2:]
+            if len(hex_string) % 2 != 0:  # Check if the length is odd
+                hex_string = '0' + hex_string
+            data_bytes = bytes.fromhex(hex_string)
+        elif isinstance(message, bytes):
+            data_bytes = message
+        else:
+            raise TypeError("Input must be of type int, str, or bytes.")
 
-    def ecdsa_sign(self, message, d, k):
+        return data_bytes
+
+    def _gen_nonce(self, message, d):
+        nonce_hash = hashlib.new('sha256')
+        nonce_hash.update(self._mess_to_bytes(random.randrange(2,self.n-1)))
+        nonce_hash.update(self._mess_to_bytes(message))
+        nonce_hash.update(self._mess_to_bytes(d))
+        return int.from_bytes(nonce_hash.digest(),"little", signed=False)  % self.n
+
+    def _hash_message(self,message):
+
+        mess_hash = hashlib.new('sha256')
+        mess_hash.update(self._mess_to_bytes(message))
+        return int.from_bytes(mess_hash.digest(), "little", signed=False) % self.n
+
+    def ecdsa_sign(self, message, d, k=None):
         """
         Generate an ECDSA signature.
         :param curve: The elliptic curve.
@@ -136,16 +162,26 @@ class EllipticCurveBase:
         :return: A tuple (r, s) representing the signature.
         """
         n = self.n
-        e = self._hash_message(message) % n
-
+        e = self._hash_message(message)
+        #print("Message: " +  hex(e))
+        #print("N: " + hex(self.n))
         # Calculate r
-        x1, y1 = self.scalar_mult(k, self.G)
+
+        if k is None:
+            #generate a good nonce (you should probably always use this)
+            nonce = self._gen_nonce(message,d)
+        else:
+            nonce = k
+        #print("Nonce = " + hex(nonce))
+        x1, y1 = self.scalar_mult(nonce, self.G)
         r = x1 % n
+        #print("r = " + hex(r) + " x1 = " + hex(x1))
         if r == 0:
             raise ValueError("r cannot be zero")
 
         # Calculate s
-        k_inv = inverse_mod(k, n)
+        k_inv = inverse_mod(nonce, n)
+        #print("inv_k: " + hex(k_inv))
         s = (k_inv * (e + d * r)) % n
         if s == 0:
             raise ValueError("s cannot be zero")
@@ -164,12 +200,14 @@ class EllipticCurveBase:
         n = self.n
 
         if not (1 <= r < n and 1 <= s < n):
+            print("extra weird error, something is wrong")
             return False
 
         # Convert the message to an integer e
-        e = self._hash_message(message) % n
-
+        e = self._hash_message(message)
+        #print("Verify Message: " + hex(e))
         w = inverse_mod(s, n)
+        #print("w= " + hex(w))
         u1 = (e * w) % n
         u2 = (r * w) % n
 
@@ -179,10 +217,14 @@ class EllipticCurveBase:
         point = self.point_add(point1, point2)
 
         if point is None:
+            print("Point is none, that's bad, mkay")
             return False
 
         x1, y1 = point
-        return (r % n) == (x1 % n)
+        result = (r % n) == (x1 % n)
+        #if result is False:
+            #print("r = " + hex(r) + " and x1 = " + hex(x1))
+        return result
 
 class BinaryFieldEllipticCurve(EllipticCurveBase):
     def __init__(self, m, poly_coeffs, a, b, n=None, G=None, h=None):
@@ -615,4 +657,36 @@ def tonelli_shanks(n, p):
     else:
         return None
 
+
+def test_prime_order(curve, G, n):
+    """
+    Verify that G has prime order n on the given binary elliptic curve.
+
+    :param curve: An instance of your binary elliptic curve class.
+    :param G: The proposed base point on the curve (x, y).
+    :param n: The integer that is claimed to be the order of G.
+    :return: True if G indeed has order n, False otherwise.
+    """
+    # 1) Quick check: G should be on the curve and G != None
+    if G is None or not curve.is_on_curve(G):
+        print("Point is either None or not on the curve.")
+        return False
+
+    # 2) Check nG == None (point at infinity)
+    nG = curve.scalar_mult(n, G)
+    if nG is not None:
+        # If nG != None, then order is not n
+        print("n * G != identity => G does not have order n.")
+        return False
+
+    # 3) Since n is prime, the only smaller divisor to check is 1:
+    #    - G != None is obviously true if G is on the curve and not the identity.
+    #    - If you had prime factors of n, you'd test those.
+
+    # 4) Additional optional checks:
+    #    For a prime n, that basically suffices—
+    #    if nG = None and G != None, G has order n.
+
+    print(f"Generator Point has prime order {n:#x} on this curve.")
+    return True
 
